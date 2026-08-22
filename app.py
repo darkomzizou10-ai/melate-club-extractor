@@ -1,179 +1,154 @@
-
-import io, re, time, zipfile
+import io,re,time,zipfile
 from datetime import datetime
-import pandas as pd
-import requests
-import streamlit as st
+import pandas as pd, requests, streamlit as st
 from bs4 import BeautifulSoup
 
-BASE_URL="https://melate.club/sorteo-{concurso}"
-PRODUCTS=("Melate","Revancha","Revanchita")
-MONTHS={"enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,"julio":7,"agosto":8,"septiembre":9,"setiembre":9,"octubre":10,"noviembre":11,"diciembre":12}
-PRIZE_RE=re.compile(r"^\s*(\d+)\.\s*(.*?)\s*\|\s*([\d,]+)\s+ganador(?:es)?\s*\|\s*premio\s*\$\s*([\d,]+\.\d{2})\s*$",re.I)
+BASE='https://melate.club/sorteo-{c}'
+PRODUCTS=('Melate','Revancha','Revanchita')
+MONTHS={'enero':1,'febrero':2,'marzo':3,'abril':4,'mayo':5,'junio':6,'julio':7,'agosto':8,'septiembre':9,'setiembre':9,'octubre':10,'noviembre':11,'diciembre':12}
+PRIZE_RE=re.compile(r'(?P<lugar>\d+)\.\s*(?P<desc>.*?)\s*(?P<gan>[\d,]+)\s+ganador(?:es)?\s*(?:\|\s*)?premio\s*\$\s*(?P<premio>[\d,]+\.\d{2})',re.I|re.S)
 
-st.set_page_config(page_title="Melate Club Extractor",page_icon="🎟️",layout="centered")
-st.title("🎟️ Melate Club Extractor")
-st.caption("Extrae Melate, Revancha y Revanchita desde melate.club y descarga CSV/Excel.")
+st.set_page_config(page_title='Melate Club Extractor v2',page_icon='🎟️',layout='centered')
+st.title('🎟️ Melate Club Extractor v2')
+st.caption('Extrae números, categorías, ganadores y premio individual desde Melate Club.')
 
-def norm(s): return re.sub(r"\s+"," ",(s or "").replace("\xa0"," ")).strip()
-
+def norm(s): return re.sub(r'\s+',' ',(s or '').replace('\xa0',' ')).strip()
 def parse_date(text):
-    m=re.search(r"(\d{1,2})\s+de\s+([a-záéíóúñ]+)\s+del?\s+(\d{4})",text,re.I)
-    if not m: return None
-    d=int(m.group(1)); mon=m.group(2).lower()
-    mon=mon.translate(str.maketrans("áéíóú","aeiou"))
-    mo=MONTHS.get(mon)
-    return datetime(int(m.group(3)),mo,d).strftime("%Y-%m-%d") if mo else None
+    m=re.search(r'(\d{1,2})\s+de\s+([a-záéíóúñ]+)\s+del?\s+(\d{4})',text,re.I)
+    if not m:return None
+    mon=m.group(2).lower().translate(str.maketrans('áéíóú','aeiou'))
+    return datetime(int(m.group(3)),MONTHS[mon],int(m.group(1))).strftime('%Y-%m-%d') if mon in MONTHS else None
 
 def tokens(html):
-    soup=BeautifulSoup(html,"html.parser")
-    return [norm(x) for x in soup.stripped_strings if norm(x)]
+    s=BeautifulSoup(html,'html.parser')
+    return [norm(x) for x in s.stripped_strings if norm(x)]
 
-def sections(toks):
-    idx={}
-    for i,t in enumerate(toks):
-        if t in PRODUCTS and t not in idx: idx[t]=i
+def split_sections(t):
+    start=next((i for i,x in enumerate(t) if 'Resultados Melate' in x),0)
+    pos={}
+    for p in PRODUCTS:
+        for i in range(start,len(t)):
+            if t[i]==p: pos[p]=i; break
     out={}
     for p in PRODUCTS:
-        if p not in idx: out[p]=[]; continue
-        start=idx[p]+1
-        later=[idx[q] for q in PRODUCTS if q in idx and idx[q]>idx[p]]
-        end=min(later) if later else len(toks)
-        for j in range(start,end):
-            l=toks[j].lower()
-            if l.startswith("despues de") or l.startswith("después de") or l.startswith("información sobre"):
-                end=j; break
-        out[p]=toks[start:end]
+        if p not in pos: out[p]=[]; continue
+        a=pos[p]+1
+        later=[pos[q] for q in PRODUCTS if q in pos and pos[q]>pos[p]]
+        b=min(later) if later else len(t)
+        for j in range(a,b):
+            low=t[j].lower()
+            if low.startswith(('despues de ','después de ','información sobre','necesitas consultar')):
+                b=j;break
+        out[p]=t[a:b]
     return out
 
-def parse_section(product,toks):
-    need=7 if product=="Melate" else 6
-    nums=[]; prizes=[]
-    for t in toks:
-        if len(nums)<need and re.fullmatch(r"\d{1,2}",t):
-            n=int(t)
-            if 1<=n<=56: nums.append(n); continue
-        m=PRIZE_RE.match(t)
-        if m:
-            prizes.append({
-                "lugar":int(m.group(1)),
-                "descripcion_acierto":norm(m.group(2)),
-                "ganadores":int(m.group(3).replace(",","")),
-                "premio_individual":float(m.group(4).replace(",",""))
-            })
-    return nums[:6], nums[6] if product=="Melate" and len(nums)>=7 else None, prizes
+def parse_section(product,t):
+    blob=' '.join(t)
+    first=re.search(r'\b1\.\s*6\s+n[uú]meros',blob,re.I)
+    prefix=blob[:first.start()] if first else blob
+    need=7 if product=='Melate' else 6
+    nums=[]
+    for s in re.findall(r'(?<![\d,.])(\d{1,2})(?![\d,.])',prefix):
+        n=int(s)
+        if 1<=n<=56:
+            nums.append(n)
+            if len(nums)==need: break
+    prizes=[]
+    for m in PRIZE_RE.finditer(blob):
+        prizes.append({'lugar':int(m.group('lugar')),'descripcion_acierto':norm(m.group('desc')),'ganadores':int(m.group('gan').replace(',','')),'premio_individual':float(m.group('premio').replace(',',''))})
+    return nums[:6],(nums[6] if product=='Melate' and len(nums)>=7 else None),prizes
 
-def parse_page(requested,html,url):
-    toks=tokens(html); head=" ".join(toks[:100])
-    m=re.search(r"Sorteo\s+Melate,\s*Revancha\s+y\s+Revanchita\s+(\d+)",head,re.I) or re.search(r"Sorteo.*?(\d{4})",head,re.I)
-    concurso=int(m.group(1)) if m else None
-    data={"solicitado":requested,"concurso":concurso,"fecha":parse_date(head),"url":url}
-    for p,sec in sections(toks).items():
-        n,a,pr=parse_section(p,sec)
-        data[p]={"numeros":n,"adicional":a,"premios":pr}
-    allpr=data["Melate"]["premios"]+data["Revancha"]["premios"]
-    if len(data["Melate"]["premios"])>=9 and len(data["Revancha"]["premios"])>=5 and all(r["ganadores"]==0 and r["premio_individual"]==0 for r in allpr):
-        data["estado_economico"]="SIN_DATOS_ECONOMICOS"
-    elif len(data["Melate"]["premios"])==9 and len(data["Revancha"]["premios"])==5:
-        data["estado_economico"]="COMPLETO"
-    else:
-        data["estado_economico"]="INCOMPLETO"
-    return data
+def parse_page(req,html,url):
+    t=tokens(html); head=' '.join(t[:120])
+    m=re.search(r'Sorteo\s+Melate,\s*Revancha\s+y\s+Revanchita\s+(\d+)',head,re.I) or re.search(r'\bSorteo\s+(\d{4})\b',head,re.I)
+    d={'concurso':int(m.group(1)) if m else None,'fecha':parse_date(head),'url':url}
+    for p,sec in split_sections(t).items():
+        n,a,pr=parse_section(p,sec); d[p]={'numeros':n,'adicional':a,'premios':pr}
+    econ=d['Melate']['premios']+d['Revancha']['premios']
+    if len(d['Melate']['premios'])==9 and len(d['Revancha']['premios'])==5 and econ and all(x['ganadores']==0 and x['premio_individual']==0 for x in econ): d['estado_economico']='SIN_DATOS_ECONOMICOS'
+    elif len(d['Melate']['premios'])==9 and len(d['Revancha']['premios'])==5 and len(d['Revanchita']['premios'])>=1: d['estado_economico']='COMPLETO'
+    else:d['estado_economico']='INCOMPLETO'
+    return d
+
+def issues(d,req):
+    out=[]
+    if d['concurso']!=req: out.append(f"concurso página={d['concurso']}")
+    if len(d['Melate']['numeros'])!=6 or d['Melate']['adicional'] is None: out.append('Melate sin 6+adicional')
+    if len(d['Revancha']['numeros'])!=6: out.append('Revancha sin 6 números')
+    if len(d['Revanchita']['numeros'])!=6: out.append('Revanchita sin 6 números')
+    if len(d['Melate']['premios'])!=9: out.append(f"Melate categorías={len(d['Melate']['premios'])}, esperado 9")
+    if len(d['Revancha']['premios'])!=5: out.append(f"Revancha categorías={len(d['Revancha']['premios'])}, esperado 5")
+    if len(d['Revanchita']['premios'])<1: out.append('Revanchita sin premio')
+    if [x['lugar'] for x in d['Melate']['premios']]!=list(range(1,10)): out.append('lugares Melate inválidos')
+    if [x['lugar'] for x in d['Revancha']['premios']]!=list(range(1,6)): out.append('lugares Revancha inválidos')
+    return out
 
 def flatten(d):
     rows=[]
     for p in PRODUCTS:
-        x=d[p]; nums=x["numeros"]; prs=x["premios"] or [{"lugar":None,"descripcion_acierto":None,"ganadores":None,"premio_individual":None}]
-        for pr in prs:
-            rows.append({
-                "concurso":d["concurso"],"fecha":d["fecha"],"producto":p.upper(),
-                **{f"n{i+1}":nums[i] if i<len(nums) else None for i in range(6)},
-                "adicional":x["adicional"],**pr,
-                "estado_economico":d["estado_economico"],"url":d["url"]
-            })
+        b=d[p]; n=b['numeros']
+        for pr in b['premios']:
+            rows.append({'concurso':d['concurso'],'fecha':d['fecha'],'producto':p.upper(),**{f'n{i+1}':n[i] if i<len(n) else None for i in range(6)},'adicional':b['adicional'],**pr,'estado_economico':d['estado_economico'],'url':d['url']})
     return rows
 
-def fetch(session,concurso,pause,retries):
-    url=BASE_URL.format(concurso=concurso)
-    for attempt in range(retries+1):
-        try:
-            r=session.get(url,timeout=20)
-            if r.status_code in (403,429): return None,f"HTTP {r.status_code}",url,None
-            r.raise_for_status()
-            d=parse_page(concurso,r.text,url); time.sleep(pause)
-            return d,None,url,r.text
-        except Exception as e:
-            if attempt==retries: return None,str(e),url,None
-            time.sleep(max(1,pause*2))
+with st.expander('⚙️ Configuración',expanded=True):
+    c1,c2=st.columns(2); ini=c1.number_input('Concurso inicial',1,value=3191); fin=c2.number_input('Concurso final',1,value=3205)
+    c3,c4=st.columns(2); pause=c3.slider('Pausa entre páginas (seg)',0.5,5.0,2.0,0.5); retries=c4.slider('Reintentos',0,5,2)
+    raw_on=st.checkbox('Conservar HTML crudo',False)
 
-with st.expander("⚙️ Configuración",expanded=True):
-    c1,c2=st.columns(2)
-    inicio=c1.number_input("Concurso inicial",min_value=1,value=3191,step=1)
-    fin=c2.number_input("Concurso final",min_value=1,value=3205,step=1)
-    c3,c4=st.columns(2)
-    pausa=c3.slider("Pausa entre páginas (seg)",0.5,5.0,1.5,0.5)
-    retries=c4.slider("Reintentos",0,5,2,1)
-    guardar_html=st.checkbox("Conservar HTML crudo",False)
+if 'rows' not in st.session_state: st.session_state.rows=[]
+if 'errs' not in st.session_state: st.session_state.errs=[]
+if 'raw' not in st.session_state: st.session_state.raw={}
 
-if "data" not in st.session_state: st.session_state.data=[]
-if "errors" not in st.session_state: st.session_state.errors=[]
-if "raw" not in st.session_state: st.session_state.raw={}
-
-if st.button("🔎 Extraer datos",type="primary",use_container_width=True):
-    if fin<inicio: st.error("Rango inválido."); st.stop()
-    total=int(fin-inicio+1)
-    if total>250: st.warning("Procesa máximo 250 concursos por corrida."); st.stop()
-    st.session_state.data=[]; st.session_state.errors=[]; st.session_state.raw={}
-    s=requests.Session()
-    s.headers.update({"User-Agent":"Mozilla/5.0 (compatible; MelateDataResearch/1.0)"})
-    prog=st.progress(0); txt=st.empty()
-    for k,c in enumerate(range(int(inicio),int(fin)+1),1):
-        txt.write(f"Procesando **{c}** ({k}/{total})…")
-        d,err,url,raw=fetch(s,c,float(pausa),int(retries))
-        if err:
-            st.session_state.errors.append({"concurso":c,"url":url,"tipo_error":"FETCH/PARSE","detalle":err})
-            if "HTTP 403" in err or "HTTP 429" in err:
-                st.error(f"{err}: proceso detenido por seguridad."); break
+if st.button('🔎 Extraer datos',type='primary',use_container_width=True):
+    if fin<ini: st.error('Rango inválido'); st.stop()
+    total=int(fin-ini+1)
+    if total>250: st.warning('Máximo 250 concursos por corrida'); st.stop()
+    st.session_state.rows=[]; st.session_state.errs=[]; st.session_state.raw={}
+    s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0 (compatible; MelateDataResearch/2.0)'})
+    prog=st.progress(0); status=st.empty()
+    for k,c in enumerate(range(int(ini),int(fin)+1),1):
+        status.write(f'Procesando **{c}** ({k}/{total})…'); url=BASE.format(c=c); err=None; html=None
+        for a in range(int(retries)+1):
+            try:
+                r=s.get(url,timeout=25)
+                if r.status_code in (403,429): err=f'HTTP {r.status_code}'; break
+                r.raise_for_status(); html=r.text; break
+            except Exception as e:
+                err=str(e)
+                if a<int(retries): time.sleep(max(1,float(pause)*2))
+        if err or html is None:
+            st.session_state.errs.append({'concurso':c,'url':url,'tipo_error':'FETCH','detalle':err or 'sin HTML'})
+            if err and ('403' in err or '429' in err): st.error(err); break
         else:
-            issues=[]
-            if d["concurso"]!=c: issues.append(f"Página reporta {d['concurso']}")
-            if len(d["Melate"]["numeros"])!=6 or d["Melate"]["adicional"] is None: issues.append("Melate incompleto")
-            if len(d["Revancha"]["numeros"])!=6: issues.append("Revancha incompleta")
-            if len(d["Revanchita"]["numeros"])!=6: issues.append("Revanchita incompleta")
-            if issues:
-                st.session_state.errors.append({"concurso":c,"url":url,"tipo_error":"INTEGRIDAD","detalle":" | ".join(issues)})
+            d=parse_page(c,html,url); bad=issues(d,c)
+            if bad: st.session_state.errs.append({'concurso':c,'url':url,'tipo_error':'INTEGRIDAD','detalle':' | '.join(bad)})
             else:
-                st.session_state.data.extend(flatten(d))
-                if guardar_html: st.session_state.raw[c]=raw
+                st.session_state.rows.extend(flatten(d))
+                if raw_on: st.session_state.raw[c]=html
+            time.sleep(float(pause))
         prog.progress(k/total)
-    txt.write("Extracción terminada.")
+    status.write('Extracción terminada.')
 
-if st.session_state.data or st.session_state.errors:
-    df=pd.DataFrame(st.session_state.data)
-    edf=pd.DataFrame(st.session_state.errors,columns=["concurso","url","tipo_error","detalle"])
+if st.session_state.rows or st.session_state.errs:
+    df=pd.DataFrame(st.session_state.rows); edf=pd.DataFrame(st.session_state.errs,columns=['concurso','url','tipo_error','detalle'])
     if not df.empty:
-        resumen=df.groupby(["concurso","fecha","estado_economico"],dropna=False).agg(filas=("producto","size"),productos=("producto","nunique")).reset_index()
-        c1,c2,c3,c4=st.columns(4)
-        c1.metric("OK",df["concurso"].nunique())
-        c2.metric("Completos",df[df.estado_economico=="COMPLETO"]["concurso"].nunique())
-        c3.metric("Sin datos",df[df.estado_economico=="SIN_DATOS_ECONOMICOS"]["concurso"].nunique())
-        c4.metric("Errores",len(edf))
-        st.subheader("Resumen"); st.dataframe(resumen,use_container_width=True,hide_index=True)
-        st.subheader("Datos"); st.dataframe(df,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Descargar CSV",df.to_csv(index=False).encode("utf-8-sig"),f"premios_{int(inicio)}_{int(fin)}.csv","text/csv",use_container_width=True)
+        resumen=df.groupby(['concurso','fecha','estado_economico'],dropna=False).agg(filas=('producto','size'),productos=('producto','nunique')).reset_index().sort_values('concurso')
+        c1,c2,c3,c4=st.columns(4); c1.metric('OK',df.concurso.nunique()); c2.metric('Completos',df[df.estado_economico=='COMPLETO'].concurso.nunique()); c3.metric('Sin datos',df[df.estado_economico=='SIN_DATOS_ECONOMICOS'].concurso.nunique()); c4.metric('Errores',len(edf))
+        st.subheader('Resumen'); st.dataframe(resumen,use_container_width=True,hide_index=True)
+        st.subheader('Premios'); st.dataframe(df[['concurso','producto','lugar','descripcion_acierto','ganadores','premio_individual']],use_container_width=True,hide_index=True)
+        st.download_button('⬇️ Descargar CSV completo',df.to_csv(index=False).encode('utf-8-sig'),f'premios_{int(ini)}_{int(fin)}.csv','text/csv',use_container_width=True)
         b=io.BytesIO()
-        with pd.ExcelWriter(b,engine="openpyxl") as w:
-            df.to_excel(w,sheet_name="Premios",index=False)
-            edf.to_excel(w,sheet_name="Errores",index=False)
-            resumen.to_excel(w,sheet_name="Resumen",index=False)
-        st.download_button("⬇️ Descargar Excel",b.getvalue(),f"premios_{int(inicio)}_{int(fin)}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
+        with pd.ExcelWriter(b,engine='openpyxl') as w:
+            df.to_excel(w,'Premios',index=False); resumen.to_excel(w,'Resumen',index=False); edf.to_excel(w,'Errores',index=False)
+        st.download_button('⬇️ Descargar Excel completo',b.getvalue(),f'premios_{int(ini)}_{int(fin)}.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',use_container_width=True)
     if not edf.empty:
-        st.subheader("Errores"); st.dataframe(edf,use_container_width=True,hide_index=True)
-        st.download_button("⬇️ Descargar errores CSV",edf.to_csv(index=False).encode("utf-8-sig"),f"errores_{int(inicio)}_{int(fin)}.csv","text/csv",use_container_width=True)
-    if guardar_html and st.session_state.raw:
+        st.subheader('Errores'); st.dataframe(edf,use_container_width=True,hide_index=True)
+    if raw_on and st.session_state.raw:
         z=io.BytesIO()
-        with zipfile.ZipFile(z,"w",zipfile.ZIP_DEFLATED) as zz:
-            for c,h in st.session_state.raw.items(): zz.writestr(f"sorteo-{c}.html",h)
-        st.download_button("⬇️ Descargar HTML crudo",z.getvalue(),f"html_{int(inicio)}_{int(fin)}.zip","application/zip",use_container_width=True)
+        with zipfile.ZipFile(z,'w',zipfile.ZIP_DEFLATED) as zz:
+            for c,h in st.session_state.raw.items(): zz.writestr(f'sorteo-{c}.html',h)
+        st.download_button('⬇️ Descargar HTML crudo',z.getvalue(),f'html_{int(ini)}_{int(fin)}.zip','application/zip',use_container_width=True)
 
-st.caption("Uso de investigación. Si Melate Club responde 403/429, la app se detiene y no intenta evadir el bloqueo.")
+st.caption('v2: exige 9 categorías de Melate, 5 de Revancha y al menos 1 de Revanchita; si falta algo, rechaza el concurso.')
+    
