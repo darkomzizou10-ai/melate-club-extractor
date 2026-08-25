@@ -1,4 +1,3 @@
-
 import io
 import re
 import time
@@ -237,8 +236,8 @@ if st.button("🔎 Extraer datos", type="primary", use_container_width=True):
 
     total = int(fin - inicio + 1)
 
-    if total > 250:
-        st.warning("Máximo 250 concursos por corrida.")
+    if total > 100:
+        st.warning("Máximo 100 concursos por corrida (aprox. 1,500 filas).")
         st.stop()
 
     st.session_state.rows = []
