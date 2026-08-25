@@ -236,8 +236,8 @@ if st.button("🔎 Extraer datos", type="primary", use_container_width=True):
 
     total = int(fin - inicio + 1)
 
-    if total > 100:
-        st.warning("Máximo 100 concursos por corrida (aprox. 1,500 filas).")
+    if total > 250:
+        st.warning("Máximo 250 concursos por corrida (aprox. 3,750 filas).")
         st.stop()
 
     st.session_state.rows = []
@@ -336,4 +336,3 @@ if st.session_state.rows or st.session_state.errors:
         st.dataframe(edf, use_container_width=True, hide_index=True)
 
 st.caption("v4 — parser basado en la estructura HTML real: h3 + div.resultado + ol.detalle_resultado + li.res.")
-    
